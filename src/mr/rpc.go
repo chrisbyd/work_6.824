@@ -14,7 +14,7 @@ import (
 // Add your RPC definitions here.
 type Args struct {
 	WorkerID string
-	taskID   int
+	TaskID   int
 	TaskType string
 }
 
@@ -23,6 +23,7 @@ type Reply struct {
 	FileName        string
 	TaskID          int
 	NReduce         int
+	NMap            int
 	AllTaskComplete bool // to ensure a
 }
 

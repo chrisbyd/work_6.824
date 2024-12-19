@@ -30,10 +30,11 @@ type Coordinator struct {
 // Your code here -- RPC handlers for the worker to call.
 
 // the RPC argument and reply types are defined in rpc.go.
-func (c *Coordinator) requestTask(args *Args, reply *Reply) error {
+func (c *Coordinator) RequestTask(args *Args, reply *Reply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	//map task
+	fmt.Printf("Received work request from work id %s", args.WorkerID)
 	if len(c.mapTasks) > 0 {
 		task := c.mapTasks[0]
 		c.mapTasks = c.mapTasks[1:]
@@ -44,6 +45,7 @@ func (c *Coordinator) requestTask(args *Args, reply *Reply) error {
 		//coordinator states
 		c.taskDetails[reply.TaskID] = task
 		c.inProgress[reply.TaskID] = args.WorkerID
+		c.taskDeadline[reply.TaskID] = time.Now()
 		return nil
 	}
 
@@ -55,6 +57,7 @@ func (c *Coordinator) requestTask(args *Args, reply *Reply) error {
 		reply.TaskID = task
 		reply.NReduce = c.nReduce
 		c.inProgress[reply.TaskID] = args.WorkerID
+		c.taskDeadline[reply.TaskID] = time.Now()
 		return nil
 	}
 	// done task
@@ -67,16 +70,24 @@ func (c *Coordinator) requestTask(args *Args, reply *Reply) error {
 	return nil
 }
 
-func (c *Coordinator) completeTask(args *Args, reply *Reply) error {
+func (c *Coordinator) CompleteTask(args *Args, reply *Reply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if args.TaskType == "map" {
-		if 
-	}
-	if args.TaskType == "reduce" {
+
+	if c.completed[args.TaskID] {
+		return nil
 	}
 
-	//
+	delete(c.inProgress, args.TaskID)
+	delete(c.taskDeadline, args.TaskID)
+	c.completed[args.TaskID] = true
+	if args.TaskType == "map" {
+		delete(c.taskDetails, args.TaskID)
+	}
+	if len(c.inProgress) == 0 && args.TaskType == "map" {
+		constructReduceTasks(c)
+	}
+	return nil
 
 }
 
@@ -100,7 +111,6 @@ func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
-	ret = c.Done()
 
 	return ret
 }
@@ -109,7 +119,7 @@ func constructMapTasks(files []string, c *Coordinator) {
 	c.mapTasks = append([]string{}, files...)
 	c.reduceTasks = make([]int, 0)
 	c.inProgress = make(map[int]string)
-
+	fmt.Fprintf(os.Stdout, "Finish map task construction")
 }
 
 func constructReduceTasks(c *Coordinator) {
@@ -136,8 +146,10 @@ func (c *Coordinator) checkTimeout() {
 				}
 				delete(c.inProgress, taskID)
 				delete(c.taskDetails, taskID)
+				delete(c.taskDeadline, taskID)
 			}
 		}
+		time.Sleep(1 * time.Second)
 	}
 
 }
@@ -163,11 +175,13 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		fmt.Fprintf(os.Stderr, "The number of reducers should be larger than 1")
 		os.Exit(1)
 	}
+	c.nMap = len(files)
+	c.nReduce = nReduce
 	constructMapTasks(files, &c)
 	c.timeout = time.Second * 10
-	
 
 	// Your code here.
+	go c.checkTimeout()
 
 	c.server()
 	return &c

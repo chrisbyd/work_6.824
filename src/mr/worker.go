@@ -8,6 +8,8 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
+	"strconv"
 	"time"
 )
 
@@ -16,6 +18,14 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
@@ -53,7 +63,7 @@ func ProcessMapTask(reply *Reply, mapf func(string, string) []KeyValue) {
 		encoder := json.NewEncoder(intermediateFiles[reduceTaskID])
 		err := encoder.Encode(kv)
 		if err != nil {
-			log.Fatalf("cannot write to file %c", intermediateFiles[reduceTaskID])
+			log.Fatalf("cannot write to file %v", intermediateFiles[reduceTaskID])
 		}
 
 	}
@@ -68,7 +78,50 @@ func ProcessMapTask(reply *Reply, mapf func(string, string) []KeyValue) {
 
 }
 
-func ProcessReduceTask() {}
+func ProcessReduceTask(reply *Reply, reducef func(string, []string) string) {
+	intermediateFiles := make([]*os.File, reply.NMap)
+	for i := 0; i < reply.NMap; i++ {
+		fileName := fmt.Sprintf("mr-%d-%d", i, reply.TaskID)
+		file, err := os.Open(fileName)
+		if err != nil {
+			log.Fatalf("cannot open file %v", fileName)
+		}
+		defer file.Close()
+		intermediateFiles[i] = file
+	}
+	intermediate := []KeyValue{}
+	for _, file := range intermediateFiles {
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			intermediate = append(intermediate, kv)
+		}
+	}
+
+	// sort
+	sort.Sort(ByKey(intermediate))
+
+	// call reduce on each distinct key
+	res := map[string]int{}
+	for _, kv := range intermediate {
+		res[kv.Key] += 1
+	}
+	outputFile, error := os.CreateTemp("", fmt.Sprintf("mr-out-%d", reply.TaskID))
+	if error != nil {
+		log.Fatalf("cannot create file for reducer %v", reply.TaskID)
+	}
+	for key, value := range res {
+		fmt.Fprintf(outputFile, "%v %v\n", key, strconv.Itoa(value))
+	}
+	finalFname := fmt.Sprintf("mr-out-%d", reply.TaskID)
+	if err := os.Rename(outputFile.Name(), finalFname); err != nil {
+		log.Fatalf("cannot rename temp file %v to final file %v: %v", outputFile.Name(), finalFname, err)
+	}
+
+}
 
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
@@ -76,18 +129,22 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// Your worker implementation here.
 	for {
+		fmt.Fprintf(os.Stdout, "start sending request to the coordinator..")
 		reply := CallCoordinator()
+		fmt.Fprintf(os.Stdout, "Finished rpc to the coordinator..")
 		if reply.TaskType == "map" {
 			ProcessMapTask(reply, mapf)
+			notifyCoordinator(reply.TaskID, reply.TaskType)
 		}
 		if reply.TaskType == "inprogress" {
 			time.Sleep(1 * time.Second)
 		}
 		if reply.TaskType == "reduce" {
-
+			ProcessReduceTask(reply, reducef)
+			notifyCoordinator(reply.TaskID, reply.TaskType)
 		}
 		if reply.TaskType == "Done" {
-			log.Printf("The worker %d has successfully completed its jobs! hoorray!")
+			log.Printf("The worker %d has successfully completed its jobs! hoorray!", reply.TaskID)
 		}
 	}
 
@@ -102,7 +159,8 @@ func CallCoordinator() *Reply {
 	args := Args{}
 
 	// fill in the argument(s).
-	args.WorkerID = "99"
+
+	args.WorkerID = strconv.Itoa(os.Getpid())
 
 	// declare a reply structure.
 	reply := Reply{}
@@ -111,7 +169,7 @@ func CallCoordinator() *Reply {
 	// the "Coordinator.Example" tells the
 	// receiving server that we'd like to call
 	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.requestTask", &args, &reply)
+	ok := call("Coordinator.RequestTask", &args, &reply)
 	if ok {
 		// reply.Y should be 100.
 		fmt.Printf("reply.Y %s\n %d\n", reply.TaskType, reply.TaskID)
@@ -123,11 +181,11 @@ func CallCoordinator() *Reply {
 	}
 }
 
-func notifyCoordinator(taskID int) {
-	args := Args{taskID: taskID}
+func notifyCoordinator(taskID int, taskType string) {
+	args := Args{TaskID: taskID, TaskType: taskType}
 	reply := Reply{}
 
-	ok := call("Coordinator.completeTask", &args, &reply)
+	ok := call("Coordinator.CompleteTask", &args, &reply)
 	if ok {
 		// reply.Y should be 100.
 		fmt.Printf("Task %d has been successfully completed!\n", reply.TaskID)
