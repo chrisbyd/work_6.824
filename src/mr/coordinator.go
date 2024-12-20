@@ -31,10 +31,12 @@ type Coordinator struct {
 
 // the RPC argument and reply types are defined in rpc.go.
 func (c *Coordinator) RequestTask(args *Args, reply *Reply) error {
+	fmt.Printf("Received work request from work id %s \n ", args.WorkerID)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	//map task
-	fmt.Printf("Received work request from work id %s", args.WorkerID)
+	//map task\
+	fmt.Printf("mutex locak has been applied \n")
+
 	if len(c.mapTasks) > 0 {
 		task := c.mapTasks[0]
 		c.mapTasks = c.mapTasks[1:]
@@ -43,6 +45,9 @@ func (c *Coordinator) RequestTask(args *Args, reply *Reply) error {
 		reply.TaskID = c.nMap - len(c.mapTasks) - 1
 		reply.NReduce = c.nReduce
 		//coordinator states
+
+		fmt.Printf("Assigned map task: %s, Task ID: %d\n", reply.FileName, reply.TaskID)
+
 		c.taskDetails[reply.TaskID] = task
 		c.inProgress[reply.TaskID] = args.WorkerID
 		c.taskDeadline[reply.TaskID] = time.Now()
@@ -54,39 +59,52 @@ func (c *Coordinator) RequestTask(args *Args, reply *Reply) error {
 		task := c.reduceTasks[0]
 		c.reduceTasks = c.reduceTasks[1:]
 		reply.TaskType = "reduce"
-		reply.TaskID = task
+		reply.TaskID = task + c.nMap
 		reply.NReduce = c.nReduce
+		reply.NMap = c.nMap
+		fmt.Printf("Assigned reduce task: Task ID: %d\n", reply.TaskID)
+
 		c.inProgress[reply.TaskID] = args.WorkerID
 		c.taskDeadline[reply.TaskID] = time.Now()
 		return nil
 	}
 	// done task
-
+	fmt.Printf("The inProgress map is %v \n", c.inProgress)
 	if len(c.inProgress) > 0 {
 		reply.TaskType = "inprogress"
 		return nil
 	}
 	reply.TaskType = "done"
+	fmt.Println("All tasks are completed. Returning 'done'.")
 	return nil
 }
 
 func (c *Coordinator) CompleteTask(args *Args, reply *Reply) error {
 	c.mu.Lock()
+
 	defer c.mu.Unlock()
 
 	if c.completed[args.TaskID] {
+		fmt.Printf("This task has already been completed by other workers\n")
 		return nil
 	}
+	fmt.Printf("The task has not been completed by other workers. \n ")
 
 	delete(c.inProgress, args.TaskID)
+	fmt.Printf("Task %d has been deleted from inProgess map. \n ", args.TaskID)
 	delete(c.taskDeadline, args.TaskID)
+	fmt.Printf("Task %d has been deleted from taskDeadline map. \n ", args.TaskID)
 	c.completed[args.TaskID] = true
 	if args.TaskType == "map" {
 		delete(c.taskDetails, args.TaskID)
+		fmt.Printf("Task %d has been deleted from taskDetails map. \n ", args.TaskID)
 	}
 	if len(c.inProgress) == 0 && args.TaskType == "map" {
+		fmt.Printf("Start constructing reduce tasks!")
 		constructReduceTasks(c)
+		c.completed = make(map[int]bool)
 	}
+	fmt.Printf("Ok! Now/ Task %d has been successfully completed. \n ", args.TaskID)
 	return nil
 
 }
@@ -97,7 +115,11 @@ func (c *Coordinator) server() {
 	rpc.HandleHTTP()
 	//l, e := net.Listen("tcp", ":1234")
 	sockname := coordinatorSock()
+	fmt.Printf("Coordinator socket path: %s\n", sockname)
 	os.Remove(sockname)
+
+	fmt.Println("Coordinator is starting the server...")
+
 	l, e := net.Listen("unix", sockname)
 	if e != nil {
 		log.Fatal("listen error:", e)
@@ -119,24 +141,28 @@ func constructMapTasks(files []string, c *Coordinator) {
 	c.mapTasks = append([]string{}, files...)
 	c.reduceTasks = make([]int, 0)
 	c.inProgress = make(map[int]string)
-	fmt.Fprintf(os.Stdout, "Finish map task construction")
+	c.taskDetails = make(map[int]string)
+	c.taskDeadline = make(map[int]time.Time)
+	c.completed = make(map[int]bool)
+	fmt.Fprintf(os.Stdout, "Finish map task construction\n")
 }
 
 func constructReduceTasks(c *Coordinator) {
 	c.reduceTasks = make([]int, 0)
 	for i := 0; i < c.nReduce; i++ {
-		c.reduceTasks[i] = i
+		c.reduceTasks = append(c.reduceTasks, i)
 	}
 }
 
 func (c *Coordinator) checkTimeout() {
+	fmt.Printf("So start checking the timeout of task\n")
 	for {
 		c.mu.Lock()
-		defer c.mu.Unlock()
+
 		for taskID, deadline := range c.taskDeadline {
 			if time.Now().After(deadline) && !c.completed[taskID] {
-				fmt.Printf("Task id %d has timed out,.. reassigining ..", taskID)
-
+				fmt.Printf("Task id %d has timed out,.. reassigining ..\n", taskID)
+				fmt.Printf("The inprogress map is %v \n", c.inProgress)
 				//任务超时，加入队列
 				if taskID < c.nMap {
 					c.mapTasks = append(c.mapTasks, c.taskDetails[taskID])
@@ -145,10 +171,12 @@ func (c *Coordinator) checkTimeout() {
 					c.reduceTasks = append(c.reduceTasks, taskID-c.nMap)
 				}
 				delete(c.inProgress, taskID)
+				fmt.Printf("The inprogress map after deletion is %v", c.inProgress)
 				delete(c.taskDetails, taskID)
 				delete(c.taskDeadline, taskID)
 			}
 		}
+		c.mu.Unlock()
 		time.Sleep(1 * time.Second)
 	}
 

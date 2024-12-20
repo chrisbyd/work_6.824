@@ -59,7 +59,7 @@ func ProcessMapTask(reply *Reply, mapf func(string, string) []KeyValue) {
 	}
 	//shuffle stage
 	for _, kv := range intermediate {
-		reduceTaskID := ihash(kv.Key) & reply.NReduce
+		reduceTaskID := ihash(kv.Key) % reply.NReduce
 		encoder := json.NewEncoder(intermediateFiles[reduceTaskID])
 		err := encoder.Encode(kv)
 		if err != nil {
@@ -79,9 +79,10 @@ func ProcessMapTask(reply *Reply, mapf func(string, string) []KeyValue) {
 }
 
 func ProcessReduceTask(reply *Reply, reducef func(string, []string) string) {
+	reducerID := reply.TaskID - reply.NMap
 	intermediateFiles := make([]*os.File, reply.NMap)
 	for i := 0; i < reply.NMap; i++ {
-		fileName := fmt.Sprintf("mr-%d-%d", i, reply.TaskID)
+		fileName := fmt.Sprintf("mr-%d-%d", i, reducerID)
 		file, err := os.Open(fileName)
 		if err != nil {
 			log.Fatalf("cannot open file %v", fileName)
@@ -89,6 +90,7 @@ func ProcessReduceTask(reply *Reply, reducef func(string, []string) string) {
 		defer file.Close()
 		intermediateFiles[i] = file
 	}
+
 	intermediate := []KeyValue{}
 	for _, file := range intermediateFiles {
 		dec := json.NewDecoder(file)
@@ -97,9 +99,11 @@ func ProcessReduceTask(reply *Reply, reducef func(string, []string) string) {
 			if err := dec.Decode(&kv); err != nil {
 				break
 			}
+			fmt.Printf("The reduce input kv is %v \n", kv)
 			intermediate = append(intermediate, kv)
 		}
 	}
+	fmt.Printf("The reduced result for reducer task %d is %v \n", reply.TaskID, intermediate)
 
 	// sort
 	sort.Sort(ByKey(intermediate))
@@ -109,14 +113,14 @@ func ProcessReduceTask(reply *Reply, reducef func(string, []string) string) {
 	for _, kv := range intermediate {
 		res[kv.Key] += 1
 	}
-	outputFile, error := os.CreateTemp("", fmt.Sprintf("mr-out-%d", reply.TaskID))
+	outputFile, error := os.CreateTemp("", fmt.Sprintf("mr-out-%d", reducerID))
 	if error != nil {
 		log.Fatalf("cannot create file for reducer %v", reply.TaskID)
 	}
 	for key, value := range res {
 		fmt.Fprintf(outputFile, "%v %v\n", key, strconv.Itoa(value))
 	}
-	finalFname := fmt.Sprintf("mr-out-%d", reply.TaskID)
+	finalFname := fmt.Sprintf("mr-out-%d", reducerID)
 	if err := os.Rename(outputFile.Name(), finalFname); err != nil {
 		log.Fatalf("cannot rename temp file %v to final file %v: %v", outputFile.Name(), finalFname, err)
 	}
@@ -129,9 +133,9 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// Your worker implementation here.
 	for {
-		fmt.Fprintf(os.Stdout, "start sending request to the coordinator..")
+		fmt.Fprintf(os.Stdout, "start sending request to the coordinator.. \n")
 		reply := CallCoordinator()
-		fmt.Fprintf(os.Stdout, "Finished rpc to the coordinator..")
+		fmt.Fprintf(os.Stdout, "Finished rpc to the coordinator.. \n")
 		if reply.TaskType == "map" {
 			ProcessMapTask(reply, mapf)
 			notifyCoordinator(reply.TaskID, reply.TaskType)
@@ -204,16 +208,19 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
 	sockname := coordinatorSock()
 	c, err := rpc.DialHTTP("unix", sockname)
+	fmt.Printf("Connecting to coordinator socket: %s\n", sockname)
 	if err != nil {
 		log.Fatal("dialing:", err)
 	}
 	defer c.Close()
-
+	fmt.Printf("Successfully Connected to coordinator socket\n")
+	fmt.Printf("Calling RPC method: %s\n", rpcname)
 	err = c.Call(rpcname, args, reply)
 	if err == nil {
+		fmt.Printf("RPC call to %s succeeded.\n", rpcname)
 		return true
 	}
-
+	fmt.Printf("Error in RPC call to %s: %v\n", rpcname, err)
 	fmt.Println(err)
 	return false
 }
