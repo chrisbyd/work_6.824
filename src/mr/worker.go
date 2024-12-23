@@ -148,7 +148,9 @@ func Worker(mapf func(string, string) []KeyValue,
 			notifyCoordinator(reply.TaskID, reply.TaskType)
 		}
 		if reply.TaskType == "Done" {
+
 			log.Printf("The worker %d has successfully completed its jobs! hoorray!", reply.TaskID)
+			break
 		}
 	}
 

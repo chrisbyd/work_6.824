@@ -50,7 +50,7 @@ func (c *Coordinator) RequestTask(args *Args, reply *Reply) error {
 
 		c.taskDetails[reply.TaskID] = task
 		c.inProgress[reply.TaskID] = args.WorkerID
-		c.taskDeadline[reply.TaskID] = time.Now()
+		c.taskDeadline[reply.TaskID] = time.Now().Add(c.timeout)
 		return nil
 	}
 
@@ -65,7 +65,7 @@ func (c *Coordinator) RequestTask(args *Args, reply *Reply) error {
 		fmt.Printf("Assigned reduce task: Task ID: %d\n", reply.TaskID)
 
 		c.inProgress[reply.TaskID] = args.WorkerID
-		c.taskDeadline[reply.TaskID] = time.Now()
+		c.taskDeadline[reply.TaskID] = time.Now().Add(c.timeout)
 		return nil
 	}
 	// done task
@@ -90,6 +90,18 @@ func (c *Coordinator) CompleteTask(args *Args, reply *Reply) error {
 	}
 	fmt.Printf("The task has not been completed by other workers. \n ")
 
+	currentWorker, exists := c.inProgress[args.TaskID]
+    if !exists {
+        fmt.Printf("Task %d is not in progress or has already been reassigned.\n", args.TaskID)
+        return nil
+    }
+
+    if currentWorker != args.WorkerID {
+        fmt.Printf("Task %d completion reported by Worker %s, but current assigned Worker is %s. Ignoring.\n",
+            args.TaskID, args.WorkerID, currentWorker)
+        return nil
+    }
+
 	delete(c.inProgress, args.TaskID)
 	fmt.Printf("Task %d has been deleted from inProgess map. \n ", args.TaskID)
 	delete(c.taskDeadline, args.TaskID)
@@ -104,9 +116,23 @@ func (c *Coordinator) CompleteTask(args *Args, reply *Reply) error {
 		constructReduceTasks(c)
 		c.completed = make(map[int]bool)
 	}
+	if args.TaskType == "reduce" && c.allReduceTasksCompleted() {
+        fmt.Printf("All reduce tasks completed. Job is done.\n")
+        c.done = true
+    }
+
 	fmt.Printf("Ok! Now/ Task %d has been successfully completed. \n ", args.TaskID)
 	return nil
 
+}
+
+func (c *Coordinator) allReduceTasksCompleted() bool {
+    for taskID := c.nMap; taskID < c.nMap+c.nReduce; taskID++ {
+        if !c.completed[taskID] {
+            return false
+        }
+    }
+    return true
 }
 
 // start a thread that listens for RPCs from worker.go
@@ -130,11 +156,10 @@ func (c *Coordinator) server() {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	ret := false
+	c.mu.Lock()
+    defer c.mu.Unlock()
+    return c.done
 
-	// Your code here.
-
-	return ret
 }
 
 func constructMapTasks(files []string, c *Coordinator) {
@@ -210,6 +235,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	// Your code here.
 	go c.checkTimeout()
+	
 
 	c.server()
 	return &c
